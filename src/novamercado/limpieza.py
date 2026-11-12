@@ -166,11 +166,37 @@ def a_numero(valor: Any) -> float | None:
     return float(s) if _NUMERO.match(s) else None
 
 
+_PUNTO_TRES = re.compile(r"^[+-]?\d{1,3}\.\d{3}$")
+
+
+def es_ambiguo(valor: Any) -> bool:
+    """``"1.234"``: con la convención local es 1.234; como unidades enteras, 1234.
+
+    Las dos lecturas razonables no coinciden, así que no se elige ninguna. Con
+    coma (``"1,234"``) sí coinciden (miles y entero), por eso no es ambiguo.
+    """
+    return isinstance(valor, str) and bool(_PUNTO_TRES.match(valor.strip()))
+
+
 def _describir(valor: Any) -> str:
     return f"'{valor}'" if isinstance(valor, str) else repr(valor)
 
 
 # ---------------------------------------------------------------- tienda
+
+# Un número con, a lo sumo, un prefijo corto: "5", "05", "T05", "T-5", "#5",
+# "tienda 5", "Tienda No. 5". Un número dentro de otro texto no basta: en
+# "NovaMercado Zona 10" el 10 es parte del nombre de la tienda 1.
+_TIENDA_TEXTO = re.compile(r"^(?:(?:tienda|store|tda|t|no|nro|num|numero|id)_?)*0*(\d+)$")
+
+
+def _tienda_desde_texto(valor: str, catalogo: Catalogo) -> int | None:
+    m = _TIENDA_TEXTO.match(normalizar(valor))
+    if m:
+        return int(m[1])
+    por_nombre = [t.tienda_id for t in catalogo.tiendas.values() if _compacto(t.nombre) == _compacto(valor)]
+    return por_nombre[0] if len(por_nombre) == 1 else None
+
 
 def limpiar_tienda(valor: Any, catalogo: Catalogo, reg: _Registro) -> int:
     if isinstance(valor, bool):
@@ -181,10 +207,9 @@ def limpiar_tienda(valor: Any, catalogo: Catalogo, reg: _Registro) -> int:
         tienda = int(valor)
         reg.reparar("tienda_id", f"{valor!r} se interpretó como {tienda}")
     elif isinstance(valor, str):
-        grupos = re.findall(r"\d+", valor)
-        if len(grupos) != 1:
+        tienda = _tienda_desde_texto(valor, catalogo)
+        if tienda is None:
             raise Rechazo(f"no se pudo determinar la tienda a partir de {_describir(valor)}")
-        tienda = int(grupos[0])
         reg.reparar("tienda_id", f"{_describir(valor)} se interpretó como {tienda}")
     elif valor is None:
         raise Rechazo("falta tienda_id")
@@ -237,10 +262,8 @@ def limpiar_fecha(valor: Any, apertura: date, reg: _Registro) -> date:
             f = _crear(anio, a, b, valor)
             reg.reparar("fecha", f"'{valor}' se interpretó como '{f.isoformat()}'")
         elif a <= 12 and b <= 12:
-            f = _crear(anio, b, a, valor)
-            reg.advertir(
-                "fecha",
-                f"'{valor}' es ambigua; se asumió día/mes/año, convención en Guatemala: '{f.isoformat()}'",
+            raise Rechazo(
+                f"la fecha '{valor}' es ambigua: puede ser día/mes o mes/día; se espera AAAA-MM-DD"
             )
         else:
             raise Rechazo(f"la fecha '{valor}' no existe")
@@ -284,6 +307,9 @@ def resolver_familia(valor: Any, catalogo: Catalogo) -> tuple[str | None, str | 
 # ---------------------------------------------------------------- promoción y ventas
 
 def limpiar_promocion(valor: Any, campo: str, reg: _Registro) -> int:
+    if es_ambiguo(valor):
+        reg.advertir(campo, f"{_describir(valor)} es ambiguo (¿{valor} o {valor.replace('.', '')}?); se asumió 0 productos en promoción")
+        return 0
     numero = a_numero(valor)
     if numero is None:
         detalle = "no se informó" if valor is None else f"{_describir(valor)} no es un número"
@@ -407,6 +433,12 @@ def limpiar_observaciones(
         recibidas.add(fid)
 
         valor = item.get("ventas")
+        if es_ambiguo(valor):
+            reg.advertir(
+                f"{campo}.ventas",
+                f"{_describir(valor)} es ambiguo (¿{valor} o {valor.strip().replace('.', '')} unidades?); no se guardó",
+            )
+            continue
         numero = a_numero(valor)
         if numero is None:
             detalle = "no se informó" if valor is None else f"{_describir(valor)} no es un número"

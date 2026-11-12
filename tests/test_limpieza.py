@@ -44,7 +44,10 @@ def test_observacion_valida_sin_observaciones(catalogo, observacion):
 
 # ------------------------------------------------------------ E01 tienda
 
-@pytest.mark.parametrize("valor", ["T05", "5", "05", " 5 ", "tienda 5", "T-5", 5.0, "#5"])
+@pytest.mark.parametrize(
+    "valor",
+    ["T05", "5", "05", " 5 ", "tienda 5", "T-5", 5.0, "#5", "Tienda No. 5", "t5", "NOVAMERCADO QUETZALTENANGO"],
+)
 def test_tienda_en_otro_formato_se_repara(catalogo, prediccion, valor):
     prediccion["tienda_id"] = valor
     solicitud, obs = limpiar_prediccion(prediccion, catalogo)
@@ -52,9 +55,22 @@ def test_tienda_en_otro_formato_se_repara(catalogo, prediccion, valor):
     assert _acciones(obs) == [("tienda_id", "reparar")]
 
 
-@pytest.mark.parametrize("valor", [99, "T99", "abc", "5-10", None, True, 5.5, [5]])
+@pytest.mark.parametrize(
+    "valor", [99, "T99", "abc", "5-10", None, True, 5.5, [5], "Quetzaltenango", "Zona 5", "sucursal 5"]
+)
 def test_tienda_inexistente_o_ambigua_se_rechaza(catalogo, prediccion, valor):
     prediccion["tienda_id"] = valor
+    with pytest.raises(Rechazo):
+        limpiar_prediccion(prediccion, catalogo)
+
+
+def test_numero_dentro_del_nombre_no_se_confunde_con_otra_tienda(catalogo, prediccion):
+    """'NovaMercado Zona 10' es la tienda 1, no la 10."""
+    prediccion["tienda_id"] = "NovaMercado Zona 10"
+    assert limpiar_prediccion(prediccion, catalogo)[0].tienda_id == 1
+    prediccion["tienda_id"] = "NovaMercado Express Zona 1"
+    assert limpiar_prediccion(prediccion, catalogo)[0].tienda_id == 4
+    prediccion["tienda_id"] = "Zona 10"
     with pytest.raises(Rechazo):
         limpiar_prediccion(prediccion, catalogo)
 
@@ -134,11 +150,18 @@ def test_fecha_en_otro_formato_inequivoco_se_repara(catalogo, prediccion, texto)
     assert _acciones(obs) == [("fecha", "reparar")]
 
 
-def test_fecha_ambigua_asume_dia_mes_con_advertencia(catalogo, prediccion):
-    prediccion["fecha"] = "05/11/2025"
+@pytest.mark.parametrize("texto", ["05/11/2025", "11-05-2025", "1.2.2026"])
+def test_fecha_ambigua_se_rechaza(catalogo, prediccion, texto):
+    prediccion["fecha"] = texto
+    with pytest.raises(Rechazo, match="ambigua"):
+        limpiar_prediccion(prediccion, catalogo)
+
+
+def test_fecha_con_dia_y_mes_iguales_no_es_ambigua(catalogo, prediccion):
+    prediccion["fecha"] = "07/07/2026"
     solicitud, obs = limpiar_prediccion(prediccion, catalogo)
-    assert solicitud.fecha == date(2025, 11, 5)
-    assert _acciones(obs) == [("fecha", "advertir")]
+    assert solicitud.fecha == date(2026, 7, 7)
+    assert _acciones(obs) == [("fecha", "reparar")]
 
 
 @pytest.mark.parametrize("texto", ["2025-02-30", "mañana", "", None, 20251117, "31/31/2025", "2025-13-01"])
@@ -291,6 +314,29 @@ def test_ventas_con_formato_se_reparan(catalogo, observacion):
     assert ventas[observacion["ventas"][0]["familia_id"]] == 1292
     assert ventas[observacion["ventas"][1]["familia_id"]] == 50
     assert Calidad.desde(obs).estado == "corregido"
+
+
+@pytest.mark.parametrize("texto", ["1.234", " 1.234 ", "12.500"])
+def test_ventas_con_punto_y_tres_decimales_son_ambiguas_y_no_se_guardan(catalogo, observacion, texto):
+    observacion["ventas"][0]["ventas"] = texto
+    solicitud, obs = limpiar_observaciones(observacion, catalogo)
+    assert len(solicitud.ventas) == 11
+    assert _acciones(obs) == [("ventas[0].ventas", "advertir")]
+    assert "ambiguo" in obs[0].detalle
+
+
+def test_ventas_con_punto_y_uno_o_dos_decimales_no_son_ambiguas(catalogo, observacion):
+    observacion["ventas"][0]["ventas"] = "812.0"
+    solicitud, obs = limpiar_observaciones(observacion, catalogo)
+    assert len(solicitud.ventas) == 12
+    assert _acciones(obs) == [("ventas[0].ventas", "reparar")]
+
+
+def test_promocion_ambigua_se_asume_cero(catalogo, prediccion):
+    prediccion["familias"][0]["en_promocion"] = "1.000"
+    solicitud, obs = limpiar_prediccion(prediccion, catalogo)
+    assert _promos(solicitud)["abarrotes"] == 0
+    assert _acciones(obs) == [("familias[0].en_promocion", "advertir")]
 
 
 def test_ventas_decimales_se_redondean_con_advertencia(catalogo, observacion):
