@@ -12,9 +12,10 @@ import pytest
 from novamercado.catalogos import cargar_catalogo
 
 TIENDAS = """tienda_id,nombre,ciudad,departamento,tipo,fecha_apertura
-1,Tienda Uno,Guatemala,Guatemala,hipermercado,2019-01-01
-5,Tienda Cinco,Quetzaltenango,Quetzaltenango,hipermercado,2019-01-01
-10,Tienda Diez,Guatemala,Guatemala,express,2025-03-15
+1,NovaMercado Zona 10,Guatemala,Guatemala,hipermercado,2019-01-01
+4,NovaMercado Express Zona 1,Guatemala,Guatemala,express,2019-01-01
+5,NovaMercado Quetzaltenango,Quetzaltenango,Quetzaltenango,hipermercado,2019-01-01
+10,NovaMercado Express Zona 16,Guatemala,Guatemala,express,2025-03-15
 """
 
 FAMILIAS = """familia_id,nombre

@@ -37,16 +37,17 @@ limpieza se valida con modelos estrictos de Pydantic (`esquemas.py`).
 | Nombres de campo | Distintos al contrato (`tienda`, `Fecha`, `id_tienda`) (E07) | **Reparar** si el nombre normalizado coincide con el contrato o con un sinónimo conocido |
 | | Dos nombres para la tienda o la fecha con valores distintos | **Rechazar** |
 | | Campos desconocidos | **Advertir**: se ignoran |
-| `tienda_id` | Texto, prefijo o decimal entero (`"5"`, `"T05"`, `5.0`) (E01) | **Reparar** si contiene un único número entero |
-| | Inexistente, ilegible o con varios números | **Rechazar** |
+| `tienda_id` | Texto, prefijo corto o decimal entero (`"5"`, `"T05"`, `"tienda 5"`, `5.0`) (E01) | **Reparar** |
+| | Nombre completo de la tienda según `tiendas.csv` | **Reparar** |
+| | Número dentro de otro texto (`"Zona 10"`), inexistente o ilegible | **Rechazar** |
 | `fecha` | Formato inequívoco distinto (`…T00:00:00`, `17/11/2025`, `20251117`) (E04) | **Reparar** |
-| | Ambigua (`05/11/2025`) | **Advertir**: se asume día/mes/año, convención en Guatemala |
+| | Ambigua (`05/11/2025`: puede ser día/mes o mes/día) | **Rechazar** |
 | | Ilegible, inexistente o anterior a la apertura de la tienda | **Rechazar** |
 | `familia_id` | Mayúsculas, tildes, espacios o nombre legible (E02) | **Reparar** al compararla normalizada con `familias.csv` |
 | | Muy parecida a una sola familia (`"lacteo"`) | **Advertir**: se usa esa familia |
 | | Desconocida | **Advertir**: se omite |
 | `en_promocion` | Texto o decimal entero (`"3"`, `2.0`) (E03) | **Reparar** |
-| | Ausente, negativa o ilegible | **Advertir**: se asume 0 |
+| | Ausente, negativa, ilegible o ambigua (`"1.000"`) | **Advertir**: se asume 0 |
 | | Decimal no entero | **Advertir**: se redondea |
 | Lista de familias | Faltan familias (E05) | **Advertir**: se pronostican las 12, con promoción 0 en las faltantes |
 | | Familia repetida con valores iguales | **Reparar**: se toma una vez |
@@ -60,6 +61,7 @@ limpieza se valida con modelos estrictos de Pydantic (`esquemas.py`).
 |---|---|---|
 | Tienda, fecha, nombres de campo | Igual que en predicción | Igual que en predicción |
 | `ventas` | Separador de miles o coma decimal (`"1,234"`, `"812,0"`) (E10) | **Reparar**: coma seguida de grupos de 3 dígitos es separador de miles; de 1 o 2 dígitos, decimal; con punto y coma, el último es el decimal |
+| | Punto con exactamente tres decimales (`"1.234"`) | **Advertir**: es ambiguo y el registro no se guarda |
 | | Negativas (E08) | **Advertir**: el registro no se guarda |
 | | Ausentes o ilegibles | **Advertir**: el registro no se guarda |
 | | Decimal no entero | **Advertir**: se redondea |
@@ -84,9 +86,33 @@ registradas como venta, así que se desconoce la venta real. Guardar 0 o el valo
 negativo contaminaría el reentrenamiento. *Alternativa:* guardar 0; se descartó
 porque es un dato inventado.
 
-**Fecha ambigua: se asume día/mes/año.** Es la convención en Guatemala. Las
-fechas en que una de las dos partes es mayor que 12 no son ambiguas y se
-reparan.
+**Tienda: solo un número con prefijo corto, o el nombre completo.** Una versión
+anterior tomaba cualquier número dentro del texto, pero los nombres de las
+tiendas contienen números: `"NovaMercado Zona 10"` es la tienda 1 y se habría
+interpretado como la 10. Darle a una tienda el pronóstico de otra es el peor
+error posible, porque se reporta como reparado y nadie lo nota. Por eso el texto
+debe ser un identificador (`"T05"`, `"tienda 5"`) o el nombre exacto; cualquier
+otra cosa se rechaza.
+
+**Fecha ambigua: se rechaza.** `05/11/2025` puede ser 5 de noviembre o 11 de
+mayo. Suponer día/mes/año (la convención en Guatemala) contradiría la regla de
+identidad: la fecha nunca se supone. Se consideró suponerla con advertencia, pero
+un error de interpretación daría el pronóstico de otro día marcado como válido.
+Las fechas en que una parte es mayor que 12, o en que día y mes coinciden, no
+son ambiguas y se reparan.
+
+**Número con punto y tres decimales: ambiguo.** Con la convención local,
+`"1.234"` es uno coma dos; leído como unidades enteras, es mil doscientos treinta
+y cuatro. Las dos lecturas razonables no coinciden, así que no se guarda. En
+cambio, `"1,234"` no es ambiguo: como separador de miles (convención local) y
+como entero dan lo mismo. Guardar el valor equivocado contaminaría el
+reentrenamiento con un dato mil veces menor.
+
+**Observaciones repetidas con valores distintos: gana la que llega después.**
+Las tiendas no envían una marca de tiempo, así que no se puede saber cuál es más
+reciente en origen. Si un sistema reenvía con retraso un mensaje viejo, pisaría
+una corrección. Es una limitación conocida; cada cambio queda registrado en la
+base de datos para poder auditarlo.
 
 **No se usa el reloj del sistema.** Las fechas son simuladas: una fecha futura o
 lejana no se rechaza por ser futura. El único límite temporal es la fecha de
