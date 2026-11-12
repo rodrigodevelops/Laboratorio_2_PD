@@ -338,3 +338,60 @@ con ese mismo identificador. Al terminar, el DAG escribe en la base de datos si
 promovió, la versión vigente y el motivo. Si el DAG falla antes de escribir su
 resultado, `GET /admin/reentrenar/{id}` lo detecta al consultar Airflow y
 responde `fallido`, con la versión vigente sin cambios.
+
+---
+
+## 6. Contenedores y operación
+
+| Servicio | Imagen | Persistencia |
+|---|---|---|
+| `db` | `postgres:16.9` | volumen `db-data` (bases `novamercado` y `mlflow`) |
+| `mlflow` | propia, `python:3.12.11-slim-bookworm` + MLflow 3.18.0 | metadatos en `db`, artefactos en el volumen `mlflow-artifacts` |
+| `inicializador` | propia (la misma de la API) | — |
+| `api` | propia, `python:3.12.11-slim-bookworm` | copia local del modelo en el volumen `modelo-cache` |
+| `airflow-*` | propia, `apache/airflow:3.2.2` | base en `airflow-db` (contenedor aparte), registros en `airflow-logs` |
+
+**Versiones fijas.** Todas las imágenes base y las dependencias de Python tienen
+versión exacta.
+
+**Datos y credenciales fuera de las imágenes.** Los archivos publicados se montan
+en solo lectura desde `datos/publicados/`. Las claves vienen de `.env`, que no
+está en el repositorio; `.env.example` sirve de plantilla. Si falta `.env`,
+`docker compose` se detiene con un mensaje que lo indica.
+
+**MLflow en el PostgreSQL del producto, pero en otra base.** El enunciado exige
+separar la base del producto de la de Airflow. MLflow usa una base aparte
+(`mlflow`) dentro del mismo servidor del producto, para no levantar un tercer
+PostgreSQL. *Alternativa:* SQLite en un volumen; se descartó porque MLflow
+corre con varios procesos y SQLite no maneja bien la escritura concurrente.
+
+**Primer modelo sin intervención.** El servicio `inicializador` corre
+`novamercado.inicializar` y termina. Si ya hay un modelo con el alias
+`vigente`, no hace nada. La API no espera a que termine: arranca, responde 503
+en `/health` mientras no haya modelo y lo carga en la siguiente revisión (15
+segundos). En las pruebas, entrenar y registrar el primer modelo tardó unos 40
+segundos.
+
+**Airflow con un entorno virtual aparte.** Las tareas del DAG ejecutan el código
+del producto con `/opt/airflow/novamercado-venv`, no con el Python de Airflow.
+Así las versiones de pandas, SQLAlchemy o MLflow que usa el producto no chocan
+con las que Airflow necesita. *Alternativa:* instalar todo en el entorno de
+Airflow; se descartó porque Airflow fija versiones de SQLAlchemy incompatibles
+con las del producto.
+
+**`LocalExecutor` en Airflow**, sin Celery ni Redis: el único DAG ejecuta pocas
+tareas en secuencia.
+
+**MLflow con lista de hosts permitidos.** MLflow 3 rechaza peticiones con un
+encabezado `Host` desconocido (protección contra *DNS rebinding*). Se permiten
+`mlflow` (el nombre del servicio dentro de Docker) y `localhost`.
+
+**Fallas rápidas de MLflow.** La API usa un tiempo de espera de 5 segundos y sin
+reintentos al consultar MLflow, para que una caída no bloquee la revisión
+periódica.
+
+**Prueba de operación.** Fuera de Docker, con PostgreSQL 16 y un servidor de
+MLflow reales: al apagar MLflow, `/health` pasó a `degradado` en la siguiente
+revisión y los pronósticos siguieron respondiendo; la API, reiniciada con MLflow
+caído, arrancó en 3 segundos con la copia local del modelo; al volver MLflow,
+`/health` lo reflejó en 8 segundos.

@@ -1,0 +1,5 @@
+*
+!src
+!config
+!requirements-servicio.txt
+**/__pycache__
