@@ -117,3 +117,224 @@ base de datos para poder auditarlo.
 **No se usa el reloj del sistema.** Las fechas son simuladas: una fecha futura o
 lejana no se rechaza por ser futura. El único límite temporal es la fecha de
 apertura de la tienda.
+
+**Valores absurdos en las observaciones.** Una venta mayor que 10 veces el
+máximo histórico de esa tienda y familia se guarda marcada como dudosa, con
+advertencia, y no se usa para entrenar (`plausibilidad.py`). El umbral es amplio
+a propósito: un cambio real de demanda no multiplica las ventas por diez de un
+día para otro, pero un cero de más sí. *Alternativa:* no revisar plausibilidad;
+se descartó porque un solo error de digitación contaminaría el reentrenamiento.
+
+---
+
+## 2. Información que usa el modelo al predecir
+
+Al pronosticar el día D solo se usa información disponible antes de la solicitud:
+
+| Información | Origen | Detalle |
+|---|---|---|
+| Ventas hasta D−1 | Histórico y observaciones registradas | Venta de D−1, D−7 y D−14; medias de 7 y 28 días; media del mismo día de la semana en las 4 semanas previas; días desde la última venta conocida |
+| Promoción del día D | La solicitud de pronóstico | Las observaciones no la incluyen |
+| Calendario | `feriados.csv` | Día de la semana, día del mes, mes, y si es feriado, fecha comercial, día de pago o medio día, según la ciudad de la tienda (`ambito`) |
+| Tienda | `tiendas.csv` | Identificador y formato (hipermercado, supermercado, express) |
+| Familia | `familias.csv` | Identificador |
+
+Todas las variables de ventas pasan por un desplazamiento de un día sobre una
+grilla diaria completa: la venta del propio día D nunca entra en sus variables.
+La prueba `test_features_no_usan_el_futuro` cambia las ventas de D en adelante y
+verifica que las variables no cambian.
+
+Si falta la observación de algún día, las variables correspondientes quedan
+vacías y LightGBM las maneja; `dias_desde_ultima` le indica al modelo cuánto
+hace que no recibe datos. Como el modelo depende de las ventas recientes, se
+adapta a cambios de demanda incluso antes de reentrenarse.
+
+Para las ventas que llegan como observaciones, la promoción se toma de la última
+solicitud de pronóstico de esa tienda, fecha y familia; si no hubo solicitud,
+queda vacía.
+
+---
+
+## 3. Modelos y cantidad sugerida
+
+### 3.1 Modelos
+
+- **Baseline:** promedio de las ventas del mismo día de la semana en las 4
+  semanas previas.
+- **LightGBM:** un modelo global para todas las tiendas y familias, con
+  objetivo Tweedie (adecuado para conteos positivos con cola larga).
+
+En los últimos 56 días del histórico, reservados para la prueba:
+
+| Modelo | WAPE | Costo de la cantidad sugerida |
+|---|---|---|
+| Baseline | 0.282 | 290 927 |
+| LightGBM | 0.179 | 173 487 (40 % menos) |
+
+Esta comparación se recalcula y se registra en MLflow cada vez que el producto
+entrena su primer modelo.
+
+### 3.2 Métricas
+
+- **Técnicas:** WAPE y MAE de la venta esperada.
+- **De negocio:** costo de la cantidad sugerida con `costos.csv`:
+  `faltante · máx(real − sugerida, 0) + sobrante · máx(sugerida − real, 0)`.
+  Es la métrica que decide el reemplazo del modelo.
+
+### 3.3 Cantidad sugerida
+
+Si faltar cuesta `cf` por unidad y sobrar cuesta `cs`, la cantidad que minimiza
+el costo esperado es el cuantil `τ = cf / (cf + cs)` de la demanda (problema del
+*newsvendor*). Con `costos.csv`, τ va de 0.29 en panadería (conviene pedir de
+menos) a 0.95 en licores (conviene pedir de más).
+
+**Método:** en un periodo que el modelo no vio (28 días de calibración) se mide
+el error `log1p(real) − log1p(esperada)` de cada familia y se guarda su cuantil
+τ. La sugerida es `expm1(log1p(esperada) + ajuste)`, redondeada a un entero no
+negativo. Los ajustes se registran en MLflow con cada modelo.
+
+**Alternativas:**
+- *Sugerida = venta esperada:* costó 36 % más (237 315 contra 174 465 en la
+  prueba), porque ignora que los costos son asimétricos.
+- *Un LightGBM de cuantiles por cada τ distinto:* costó un poco más (178 818) y
+  tardó siete veces más en entrenar.
+
+---
+
+## 4. Criterio de reemplazo del modelo vigente
+
+### 4.1 El problema de la fuga de información
+
+La forma habitual de comparar un modelo nuevo (retador) con el vigente
+(campeón) es evaluar los dos en los datos más recientes. Pero si el vigente se
+entrenó con parte de esos días, ya los conoce. LightGBM se ajusta mucho a sus
+datos de entrenamiento, así que en la práctica el candidato casi nunca ganaría,
+el modelo no se actualizaría y el servicio fallaría ante cambios de demanda.
+
+### 4.2 El criterio
+
+1. **Ventana de evaluación:** los últimos días (hasta 14) con predicciones
+   registradas del vigente y ventas reales conocidas.
+2. **El vigente se evalúa con las cantidades que realmente entregó** en esos
+   días. Se calcularon antes de conocer esas ventas, así que no hay fuga.
+3. **El candidato se entrena con datos anteriores a la ventana**, se calibra con
+   los 28 días previos y predice la ventana con la misma información que tenía
+   el servicio: ventas hasta el día anterior y la promoción de cada solicitud.
+   Entrenamiento, calibración y evaluación nunca se superponen.
+4. **Se promueve si su costo es al menos 2 % menor.** Si gana, se vuelve a
+   entrenar con todos los datos antes de registrarlo, para no desperdiciar los
+   días más recientes. Los ajustes de la cantidad sugerida se recalculan con un
+   modelo auxiliar entrenado sin los últimos 28 días.
+5. **Con menos de 7 días de evidencia, el vigente se mantiene.**
+
+Si el entrenamiento falla o el candidato no supera el criterio, no se registra
+ninguna versión y el alias no se mueve: el vigente no se ve afectado.
+
+**Consecuencia:** justo después de una promoción, el nuevo vigente necesita al
+menos 7 días de operación antes de poder ser reemplazado. Funciona como periodo
+de prueba y evita cambiar de modelo por el ruido de pocos días.
+
+**El 2 % de mejora mínima** evita reemplazar el modelo por diferencias que
+pueden deberse al azar en una ventana corta.
+
+**Primer modelo:** al levantar el producto desde cero no hay contra quién
+compararse, así que se registra como vigente directamente, junto con su
+comparación contra el baseline como evidencia (`novamercado.inicializar`). Si ya
+existe un vigente, no se entrena de nuevo.
+
+**Si MLflow no responde,** la inicialización espera y reintenta; nunca confunde
+"no hay conexión" con "no hay modelo".
+
+**Alternativas descartadas:**
+- *Evaluar los dos modelos en los últimos días:* fuga a favor del vigente
+  (sección 4.1).
+- *Promover siempre el modelo más reciente:* no protege contra un
+  reentrenamiento peor que el vigente, lo que el enunciado prohíbe.
+
+### 4.3 Registro en MLflow
+
+- Cada reentrenamiento queda como una corrida del experimento `novamercado`, con
+  sus parámetros, métricas, motivo y la comparación por fila.
+- Solo los modelos promovidos se registran como versión de
+  `novamercado-ventas`, con el alias `vigente`, la corrida que la produjo y el
+  motivo de la promoción. Así se puede rastrear cada versión hasta sus datos y
+  parámetros.
+
+---
+
+## 5. Servicio y persistencia
+
+### 5.1 La API solo traduce HTTP
+
+Los endpoints leen el cuerpo como JSON libre y llaman a `servicio.py`. No se
+declara un modelo de Pydantic en la firma del endpoint, porque FastAPI
+rechazaría con 422 cualquier dato defectuoso antes de que la política del
+producto pueda repararlo o advertirlo. Pydantic valida después de la limpieza,
+en modo estricto, y también valida cada respuesta antes de enviarla.
+
+### 5.2 Qué se registra
+
+| Tabla | Contenido |
+|---|---|
+| `solicitudes` | Cada llamada, con su cuerpo original, el estado (`ok`, `corregido`, `advertencia`, `rechazada`, `error`), el motivo de rechazo y la versión del modelo |
+| `correcciones` | Cada observación de calidad (campo, acción y detalle) |
+| `predicciones` | Por familia: promoción usada, venta esperada, cantidad sugerida y versión del modelo |
+| `observaciones` | La venta real vigente por fecha, tienda y familia, y si es atípica |
+| `observaciones_historial` | Cada alta o cambio de una observación |
+| `reentrenamientos` | Cada ejecución del DAG: estado, si se promovió, versión y motivo |
+
+Las solicitudes rechazadas también se registran: sirven para medir qué
+problemas llegan y con qué frecuencia.
+
+### 5.3 Observaciones idempotentes
+
+La llave primaria de `observaciones` es (tienda, fecha, familia). Al recibir un
+envío, se compara cada valor con el guardado: si es igual no se escribe nada;
+si es nuevo o distinto se inserta o actualiza y se anota en el historial.
+`registros_guardados` cuenta solo esos cambios, así que reenviar una
+observación idéntica responde 0. Todo ocurre en una transacción; si dos envíos
+idénticos llegan a la vez, el segundo choca con la llave primaria y se
+reintenta una vez, ya sin cambios.
+
+**Alternativa:** guardar cada envío como una fila nueva y deduplicar al leer. Se
+descartó porque complica todas las consultas y el contrato pide que el reenvío
+no duplique información.
+
+### 5.4 Varias solicitudes de la misma fecha
+
+Una tienda puede pedir el pronóstico de una fecha más de una vez. Todas se
+registran. Para comparar modelos y para tomar la promoción de un día se usa la
+última solicitud de cada fecha, tienda y familia.
+
+### 5.5 Modelo en memoria y recarga sin reinicio
+
+El servicio predice con el modelo que tiene en memoria. Un hilo revisa cada 15
+segundos la base de datos, MLflow y Airflow. Si el alias `vigente` apunta a
+otra versión, la descarga y la usa en la siguiente solicitud. Un modelo
+promovido se empieza a usar, en el peor caso, unos 15 segundos después de que
+el DAG mueve el alias, muy por debajo del límite de 2 minutos.
+
+**Alternativas:** que el DAG avise a la API con una llamada HTTP. Se descartó
+porque, si esa llamada se pierde, el servicio queda con el modelo viejo; la
+revisión periódica se corrige sola.
+
+### 5.6 Si una dependencia falla
+
+| Falla | Comportamiento |
+|---|---|
+| MLflow | Se sigue prediciendo con el modelo en memoria; `/health` responde `degradado` en la siguiente revisión (máximo 15 s) y vuelve a `ok` cuando MLflow responde |
+| MLflow al arrancar | Se usa la copia local del último modelo descargado (volumen de Docker) |
+| Airflow | `POST /admin/reentrenar` responde 503; `/health`, `degradado` |
+| Base de datos | Las predicciones se responden igual, con solo el histórico como historia, y se registra el error; las observaciones responden 503 porque no se pueden guardar |
+| Sin modelo | `/health` y los pronósticos responden 503 |
+
+La prioridad es que la tienda reciba su pronóstico: perder el registro de una
+predicción es menos grave que dejar a la tienda sin inventario planificado.
+
+### 5.7 Estado de un reentrenamiento
+
+`POST /admin/reentrenar` crea un registro `en_curso` y dispara el DAG en Airflow
+con ese mismo identificador. Al terminar, el DAG escribe en la base de datos si
+promovió, la versión vigente y el motivo. Si el DAG falla antes de escribir su
+resultado, `GET /admin/reentrenar/{id}` lo detecta al consultar Airflow y
+responde `fallido`, con la versión vigente sin cambios.

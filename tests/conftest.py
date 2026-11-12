@@ -85,3 +85,58 @@ def prediccion():
 @pytest.fixture
 def observacion():
     return copy.deepcopy(_OBSERVACION)
+
+
+# ------------------------------------------------------------------ datos sintéticos para el modelo
+
+FERIADOS = """fecha,nombre,tipo,ambito
+2025-09-15,Independencia,feriado,nacional
+2025-10-20,Revolución,feriado,nacional
+2025-11-01,Todos los Santos,feriado,nacional
+2025-09-30,Fin de mes,pago,nacional
+2025-10-31,Fin de mes,pago,nacional
+2025-11-15,Feria local,feriado,Quetzaltenango
+"""
+
+
+@pytest.fixture(scope="session")
+def feriados(dir_catalogos):
+    from novamercado.features import leer_feriados
+
+    (dir_catalogos / "feriados.csv").write_text(FERIADOS, encoding="utf-8")
+    return leer_feriados(dir_catalogos / "feriados.csv")
+
+
+@pytest.fixture(scope="session")
+def historico(catalogo):
+    """Ventas diarias con patrón semanal, efecto de promoción y ruido, desde 2025-06-01."""
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(0)
+    fechas = pd.date_range("2025-06-01", "2025-11-30")
+    filas = []
+    for tienda in catalogo.tiendas.values():
+        for j, familia in enumerate(catalogo.ids_familias):
+            nivel = 40 + 15 * j + 10 * tienda.tienda_id
+            for fecha in fechas:
+                if fecha.date() < tienda.fecha_apertura:
+                    continue
+                promo = int(rng.random() < 0.2) * int(rng.integers(1, 6))
+                media = nivel * (1.4 if fecha.dayofweek >= 5 else 1.0) * (1 + 0.08 * promo)
+                filas.append((fecha, tienda.tienda_id, familia, int(rng.poisson(media)), promo))
+    return pd.DataFrame(filas, columns=["fecha", "tienda_id", "familia_id", "ventas", "en_promocion"])
+
+
+@pytest.fixture(scope="session")
+def params():
+    return {
+        "modelo": {
+            "nombre_registro": "prueba-ventas", "alias_vigente": "vigente", "experimento": "prueba",
+            "lgbm": {"objective": "tweedie", "learning_rate": 0.1, "num_leaves": 15, "min_data_in_leaf": 20,
+                     "num_boost_round": 60, "num_threads": 1, "seed": 1},
+        },
+        "reentrenamiento": {"dias_calibracion": 21, "dias_evaluacion_max": 14, "dias_evaluacion_min": 7,
+                            "mejora_minima_costo": 0.02, "dias_prueba_inicial": 21},
+        "observaciones": {"factor_atipico": 10},
+    }
