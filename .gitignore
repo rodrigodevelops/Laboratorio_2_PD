@@ -6,3 +6,6 @@ datos/publicados/*
 !datos/publicados/.gitkeep
 logs/
 mlruns/
+cache_modelo/
+*.db
+mlartifacts/

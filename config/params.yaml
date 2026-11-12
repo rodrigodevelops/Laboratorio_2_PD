@@ -1,0 +1,28 @@
+# Parámetros de producto y modelo. Cambiarlos no requiere tocar el código.
+
+datos:
+  dir_publicados: datos/publicados     # carpeta donde se colocan los archivos publicados
+
+modelo:
+  nombre_registro: novamercado-ventas  # nombre en el Model Registry de MLflow
+  alias_vigente: vigente
+  experimento: novamercado
+  semilla: 42
+  lgbm:
+    objective: tweedie
+    learning_rate: 0.05
+    num_leaves: 63
+    min_data_in_leaf: 50
+    feature_fraction: 0.9
+    num_boost_round: 600
+    num_threads: 4
+
+reentrenamiento:
+  dias_calibracion: 28        # periodo para calibrar la cantidad sugerida
+  dias_evaluacion_max: 14     # días recientes con predicciones del vigente y ventas reales
+  dias_evaluacion_min: 7      # menos que esto: no hay evidencia para reemplazar
+  mejora_minima_costo: 0.02   # el candidato debe costar al menos 2 % menos
+  dias_prueba_inicial: 56     # reserva del histórico para comparar con el baseline al arrancar
+
+observaciones:
+  factor_atipico: 10          # ventas > factor × máximo histórico: dudosas, no se usan para entrenar
