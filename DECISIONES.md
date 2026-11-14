@@ -395,3 +395,64 @@ MLflow reales: al apagar MLflow, `/health` pasó a `degradado` en la siguiente
 revisión y los pronósticos siguieron respondiendo; la API, reiniciada con MLflow
 caído, arrancó en 3 segundos con la copia local del modelo; al volver MLflow,
 `/health` lo reflejó en 8 segundos.
+
+---
+
+## 7. Reentrenamiento con Airflow
+
+### 7.1 El DAG
+
+`dags/reentrenamiento.py` tiene tres tareas en secuencia. El DAG solo orquesta:
+cada tarea ejecuta un paso de `novamercado.tareas`, que tiene pruebas propias.
+
+| Tarea | Qué hace |
+|---|---|
+| `extraer` | Lee de la base del producto las observaciones utilizables, las promociones solicitadas y las predicciones del modelo vigente; consulta en MLflow cuál es la versión vigente |
+| `entrenar` | Entrena el candidato y aplica el criterio de reemplazo (sección 4) |
+| `registrar` | Guarda la corrida en MLflow; si se promovió, registra la versión y mueve el alias; escribe el resultado en `reentrenamientos` |
+
+Cada tarea deja sus resultados en una carpeta de trabajo de la ejecución, así
+que se puede revisar o repetir un paso sin repetir los anteriores.
+
+**Alternativa:** una sola tarea que haga todo. Se descartó porque en la interfaz
+de Airflow no se vería en qué paso falló, y repetirla obligaría a volver a
+entrenar.
+
+### 7.2 Configuración
+
+- **Sin calendario** (`schedule=None`): lo dispara `POST /admin/reentrenar` o la
+  interfaz de Airflow. El enunciado pide reentrenar a demanda.
+- **Una ejecución a la vez** (`max_active_runs=1`): dos reentrenamientos
+  simultáneos podrían mover el alias en un orden inesperado. Si llega otra
+  solicitud, espera en cola.
+- **Sin reintentos automáticos:** un reintento de `registrar` podría registrar
+  dos versiones. Si falla, el vigente no cambia y se puede volver a disparar.
+- **Límite de 10 minutos por tarea y 15 por ejecución**, para que un
+  reentrenamiento bloqueado no quede `en_curso` para siempre. En las pruebas,
+  un reentrenamiento completo tarda menos de un minuto.
+- **El DAG arranca activo** (`DAGS_ARE_PAUSED_AT_CREATION=false`): el producto
+  funciona sin intervención manual.
+
+### 7.3 Si algo falla
+
+Solo `registrar` mueve el alias, y lo hace como último paso. Si cualquier tarea
+falla antes, el alias sigue apuntando al vigente. La tarea `registrar` no
+alcanza a escribir el resultado, así que `GET /admin/reentrenar/{id}` consulta
+Airflow, detecta la ejecución fallida y responde `fallido` con la versión
+vigente sin cambios.
+
+**Credenciales:** las tareas leen la dirección de la base de datos y de MLflow
+de variables de entorno del contenedor dentro del comando, no en la plantilla
+del operador. Así no aparecen en la pestaña *Rendered Templates* de Airflow.
+
+**Disparado desde la interfaz de Airflow:** si la ejecución no se creó desde la
+API, `registrar` crea su registro en `reentrenamientos` al terminar, para que
+también se pueda consultar por la API.
+
+**Sin modelo vigente** (por ejemplo, si el registro de MLflow se borró), el
+reentrenamiento entrena como la primera vez y registra el modelo.
+
+### 7.4 El modelo nuevo se usa sin reiniciar
+
+Cuando `registrar` mueve el alias, la API lo detecta en su siguiente revisión
+(máximo 15 segundos) y responde con la nueva versión (sección 5.5).
