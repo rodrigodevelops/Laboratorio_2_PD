@@ -19,7 +19,7 @@ modelo:
 
 reentrenamiento:
   dias_calibracion: 28        # periodo para calibrar la cantidad sugerida
-  dias_evaluacion_max: 14     # días recientes con predicciones del vigente y ventas reales
+  dias_evaluacion_max: 7      # días recientes con predicciones del vigente y ventas reales
   dias_evaluacion_min: 7      # menos que esto: no hay evidencia para reemplazar
   mejora_minima_costo: 0.02   # el candidato debe costar al menos 2 % menos
   dias_prueba_inicial: 56     # reserva del histórico para comparar con el baseline al arrancar
