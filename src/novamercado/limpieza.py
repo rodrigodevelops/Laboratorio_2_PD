@@ -204,8 +204,7 @@ def limpiar_tienda(valor: Any, catalogo: Catalogo, reg: _Registro) -> int:
     if isinstance(valor, int):
         tienda = valor
     elif isinstance(valor, float) and valor.is_integer():
-        tienda = int(valor)
-        reg.reparar("tienda_id", f"{valor!r} se interpretó como {tienda}")
+        tienda = int(valor)  # en JSON, 5 y 5.0 son el mismo número: no es un defecto
     elif isinstance(valor, str):
         tienda = _tienda_desde_texto(valor, catalogo)
         if tienda is None:
@@ -322,7 +321,7 @@ def limpiar_promocion(valor: Any, campo: str, reg: _Registro) -> int:
         entero = round(numero)
         reg.advertir(campo, f"{_describir(valor)} no es entero; se redondeó a {entero}")
         return entero
-    if not isinstance(valor, int) or isinstance(valor, bool):
+    if isinstance(valor, str):  # 2 y 2.0 son el mismo número JSON; solo el texto se repara
         reg.reparar(campo, f"{_describir(valor)} se interpretó como {int(numero)}")
     return int(numero)
 
@@ -454,7 +453,7 @@ def limpiar_observaciones(
             entero = float(round(numero))
             reg.advertir(f"{campo}.ventas", f"{_describir(valor)} no es entero; se redondeó a {entero:.0f}")
             numero = entero
-        elif not isinstance(valor, int) or isinstance(valor, bool):
+        elif isinstance(valor, str):  # 994 y 994.0 son el mismo número JSON; solo el texto se repara
             reg.reparar(f"{campo}.ventas", f"{_describir(valor)} se interpretó como {numero:.0f}")
 
         if fid in elegidas:

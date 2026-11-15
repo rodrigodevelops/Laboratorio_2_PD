@@ -119,6 +119,37 @@ curl -X POST http://localhost:8000/admin/reentrenar          # devuelve {"id": "
 curl http://localhost:8000/admin/reentrenar/<id>
 ```
 
+### Ver los experimentos y los reentrenamientos
+
+- **MLflow** (<http://localhost:5000>): experimento `novamercado` con cada
+  corrida (primer modelo y reentrenamientos, con su motivo y métricas) y, en
+  *Models*, las versiones de `novamercado-ventas` con el alias `vigente`.
+- **Airflow** (<http://localhost:8080>, usuario y clave de `.env`): DAG
+  `reentrenamiento` con cada ejecución y sus tareas `extraer`, `entrenar` y
+  `registrar`.
+
+---
+
+## Prueba de operación
+
+Con el producto levantado y el entorno de desarrollo activo (ver abajo):
+
+```bash
+# 28 días de operación desde el 2026-03-01: observaciones del día anterior,
+# pronósticos con 25 % de solicitudes defectuosas, un cambio de demanda y un
+# reentrenamiento cada 7 días. Escribe docs/evidencia/operacion.md
+python scripts/simular_operacion.py --desde 2026-03-01 --dias 28 \
+  --cambio-desde 2026-03-08 --cambio bebidas=1.5,snacks=1.5 --reentrenar-cada 7
+
+# MLflow detenido y de vuelta. Escribe docs/evidencia/interrupcion_mlflow.md
+bash scripts/probar_interrupcion_mlflow.sh
+
+# Detener y volver a levantar sin borrar volúmenes. Escribe docs/evidencia/reinicio.md
+bash scripts/probar_reinicio.sh
+```
+
+La evidencia de funcionamiento está en [`docs/evidencia/`](docs/evidencia/).
+
 ---
 
 ## Desarrollo
@@ -149,6 +180,8 @@ datos sintéticos y SQLite. En Linux o WSL, LightGBM requiere
 │   ├── db.py             #   PostgreSQL
 │   └── estado.py         #   modelo en memoria y salud de las dependencias
 ├── dags/                 # DAG de reentrenamiento
+├── scripts/              # simulación de operación y pruebas de interrupción y reinicio
+├── docs/evidencia/       # evidencia de funcionamiento
 ├── docker/               # Dockerfiles e inicialización de PostgreSQL
 ├── config/params.yaml    # parámetros de producto y modelo
 ├── tests/
@@ -157,3 +190,9 @@ datos sintéticos y SQLite. En Linux o WSL, LightGBM requiere
 ├── CLAUDE.md
 └── DECISIONES.md
 ```
+
+## Uso de herramientas de IA
+
+El desarrollo se apoyó en Claude como asistente de programación. Las reglas del
+proyecto para el agente están en [CLAUDE.md](CLAUDE.md). El autor revisó, probó
+y puede justificar todo el código y las decisiones.

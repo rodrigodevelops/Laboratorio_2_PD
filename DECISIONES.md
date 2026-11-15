@@ -37,7 +37,7 @@ limpieza se valida con modelos estrictos de Pydantic (`esquemas.py`).
 | Nombres de campo | Distintos al contrato (`tienda`, `Fecha`, `id_tienda`) (E07) | **Reparar** si el nombre normalizado coincide con el contrato o con un sinónimo conocido |
 | | Dos nombres para la tienda o la fecha con valores distintos | **Rechazar** |
 | | Campos desconocidos | **Advertir**: se ignoran |
-| `tienda_id` | Texto, prefijo corto o decimal entero (`"5"`, `"T05"`, `"tienda 5"`, `5.0`) (E01) | **Reparar** |
+| `tienda_id` | Texto o prefijo corto (`"5"`, `"T05"`, `"tienda 5"`) (E01) | **Reparar** |
 | | Nombre completo de la tienda según `tiendas.csv` | **Reparar** |
 | | Número dentro de otro texto (`"Zona 10"`), inexistente o ilegible | **Rechazar** |
 | `fecha` | Formato inequívoco distinto (`…T00:00:00`, `17/11/2025`, `20251117`) (E04) | **Reparar** |
@@ -46,7 +46,7 @@ limpieza se valida con modelos estrictos de Pydantic (`esquemas.py`).
 | `familia_id` | Mayúsculas, tildes, espacios o nombre legible (E02) | **Reparar** al compararla normalizada con `familias.csv` |
 | | Muy parecida a una sola familia (`"lacteo"`) | **Advertir**: se usa esa familia |
 | | Desconocida | **Advertir**: se omite |
-| `en_promocion` | Texto o decimal entero (`"3"`, `2.0`) (E03) | **Reparar** |
+| `en_promocion` | Número escrito como texto (`"3"`) (E03) | **Reparar** |
 | | Ausente, negativa, ilegible o ambigua (`"1.000"`) | **Advertir**: se asume 0 |
 | | Decimal no entero | **Advertir**: se redondea |
 | Lista de familias | Faltan familias (E05) | **Advertir**: se pronostican las 12, con promoción 0 en las faltantes |
@@ -113,6 +113,14 @@ Las tiendas no envían una marca de tiempo, así que no se puede saber cuál es 
 reciente en origen. Si un sistema reenvía con retraso un mensaje viejo, pisaría
 una corrección. Es una limitación conocida; cada cambio queda registrado en la
 base de datos para poder auditarlo.
+
+**Números JSON con decimal `.0`: no son defectos.** En JSON, `994` y `994.0` son
+el mismo número, y muchos sistemas los envían con decimal. Se aceptan sin
+observación en `tienda_id`, `en_promocion` y `ventas`; solo se reparan los
+números escritos como texto (`"994"`, `"1,234"`). Una versión anterior los
+marcaba como corregidos: en la simulación, 262 de 280 observaciones salían
+`corregido` sin tener ningún problema real, lo que ocultaba los defectos de
+verdad.
 
 **No se usa el reloj del sistema.** Las fechas son simuladas: una fecha futura o
 lejana no se rechaza por ser futura. El único límite temporal es la fecha de
@@ -213,8 +221,8 @@ el modelo no se actualizaría y el servicio fallaría ante cambios de demanda.
 
 ### 4.2 El criterio
 
-1. **Ventana de evaluación:** los últimos días (hasta 14) con predicciones
-   registradas del vigente y ventas reales conocidas.
+1. **Ventana de evaluación:** los últimos 7 días con predicciones registradas
+   del vigente y ventas reales conocidas.
 2. **El vigente se evalúa con las cantidades que realmente entregó** en esos
    días. Se calcularon antes de conocer esas ventas, así que no hay fuga.
 3. **El candidato se entrena con datos anteriores a la ventana**, se calibra con
@@ -237,6 +245,34 @@ de prueba y evita cambiar de modelo por el ruido de pocos días.
 **El 2 % de mejora mínima** evita reemplazar el modelo por diferencias que
 pueden deberse al azar en una ventana corta.
 
+### 4.3 Por qué una ventana de 7 días y no de 14
+
+Como el candidato solo puede entrenarse con datos anteriores a la ventana, el
+largo de la ventana fija cuánto tarda un cambio de demanda en llegar al modelo:
+con 14 días, un cambio necesita más de dos semanas para que el candidato lo vea.
+
+Se comparó con el simulador (`scripts/simular_operacion.py`), con el mismo
+periodo, los mismos datos y el mismo cambio de demanda (bebidas y snacks +50 %
+desde el 8 de marzo de 2026), con un reentrenamiento cada 7 días:
+
+| | Ventana de 14 días | Ventana de 7 días |
+|---|---|---|
+| Promoción del modelo nuevo | 29 de marzo | 22 de marzo |
+| Costo de la última semana | 19 663 | 18 308 (−7 %) |
+| Costo total de 4 semanas | 99 705 | 98 452 |
+| Reentrenamientos sin cambio de demanda | No promovidos | No promovidos |
+
+**Costo de la decisión:** con menos días la comparación tiene más ruido. En el
+primer reentrenamiento, sin cambio de demanda, el candidato salió un 1.0 %
+mejor por azar, por debajo del umbral. Si alguna vez el ruido supera el umbral,
+el daño es bajo: se promueve un modelo igual de bueno con datos más recientes.
+Se eligió 7 días porque el costo de las sugerencias se evalúa en un periodo que
+puede traer cambios de demanda, y adaptarse una semana antes reduce ese costo.
+
+**Limitación que se mantiene:** aun con 7 días, un cambio de demanda tarda al
+menos una semana en entrar a los árboles del modelo. Mientras tanto, el vigente
+se adapta en parte gracias a las variables de ventas recientes (sección 2).
+
 **Primer modelo:** al levantar el producto desde cero no hay contra quién
 compararse, así que se registra como vigente directamente, junto con su
 comparación contra el baseline como evidencia (`novamercado.inicializar`). Si ya
@@ -251,7 +287,7 @@ existe un vigente, no se entrena de nuevo.
 - *Promover siempre el modelo más reciente:* no protege contra un
   reentrenamiento peor que el vigente, lo que el enunciado prohíbe.
 
-### 4.3 Registro en MLflow
+### 4.4 Registro en MLflow
 
 - Cada reentrenamiento queda como una corrida del experimento `novamercado`, con
   sus parámetros, métricas, motivo y la comparación por fila.

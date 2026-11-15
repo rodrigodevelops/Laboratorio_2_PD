@@ -46,7 +46,7 @@ def test_observacion_valida_sin_observaciones(catalogo, observacion):
 
 @pytest.mark.parametrize(
     "valor",
-    ["T05", "5", "05", " 5 ", "tienda 5", "T-5", 5.0, "#5", "Tienda No. 5", "t5", "NOVAMERCADO QUETZALTENANGO"],
+    ["T05", "5", "05", " 5 ", "tienda 5", "T-5", "#5", "Tienda No. 5", "t5", "NOVAMERCADO QUETZALTENANGO"],
 )
 def test_tienda_en_otro_formato_se_repara(catalogo, prediccion, valor):
     prediccion["tienda_id"] = valor
@@ -113,7 +113,7 @@ def test_familia_desconocida_se_omite_y_el_resto_se_predice(catalogo, prediccion
 
 # ------------------------------------------------------------ E03 promoción
 
-@pytest.mark.parametrize("valor, esperado", [("3", 3), (2.0, 2), (" 4 ", 4), ("1,000", 1000)])
+@pytest.mark.parametrize("valor, esperado", [("3", 3), ("2.0", 2), (" 4 ", 4), ("1,000", 1000)])
 def test_promocion_texto_o_decimal_entero_se_repara(catalogo, prediccion, valor, esperado):
     prediccion["familias"][0]["en_promocion"] = valor
     solicitud, obs = limpiar_prediccion(prediccion, catalogo)
@@ -269,6 +269,20 @@ def test_falta_la_fecha_se_rechaza(catalogo, prediccion):
     del prediccion["fecha"]
     with pytest.raises(Rechazo, match="fecha"):
         limpiar_prediccion(prediccion, catalogo)
+
+
+# ------------------------------------------------------------ números JSON con decimal .0
+
+def test_numeros_json_enteros_con_decimal_no_son_defectos(catalogo, prediccion, observacion):
+    """En JSON, 5 y 5.0 son el mismo número: no se informa ninguna corrección."""
+    prediccion["tienda_id"] = 5.0
+    prediccion["familias"][0]["en_promocion"] = 2.0
+    solicitud, obs = limpiar_prediccion(prediccion, catalogo)
+    assert obs == [] and solicitud.tienda_id == 5 and _promos(solicitud)["abarrotes"] == 2
+    for v in observacion["ventas"]:
+        v["ventas"] = float(v["ventas"])
+    _, obs = limpiar_observaciones(observacion, catalogo)
+    assert obs == []
 
 
 # ------------------------------------------------------------ E08 ventas negativas
